@@ -6,7 +6,7 @@ POSTECH
   <img src="assets/teaser.png">
 </p>
 
-> Our model discovers various style prototypes from the dataset in an unsupervised manner. The style prototype consists of a combination of varioius attributes including (left) time, weather, season, and texture; and (right) age, gender, and accessories.
+> Our model discovers various style prototypes from the dataset in a self-supervised manner. The style prototype consists of a combination of varioius attributes including (left) time, weather, season, and texture; and (right) age, gender, and accessories.
 
 > **Paper:** https://arxiv.org/abs/2203.15375
 
@@ -125,9 +125,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 python train.py --resum
 ```
 
 ## Citation
-If you find this repository useful for your research, please cite out paper:
+If you find this repository useful for your research, please cite our paper:
 ```
-@inproceedings{kim2022styled,
+@inproceedings{kim2022style,
   title={A Style-aware Discriminator for Controllable Image Translation},
   author={Kim, Kunhee and Park, Sanghun and Jeon, Eunyeong and Kim, Taehun and Kim, Daijin},
   booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition},
@@ -137,3 +137,9 @@ If you find this repository useful for your research, please cite out paper:
 
 ## Acknowledgements
 Many of our implementations are adapted from previous works, including [SwAV](https://github.com/facebookresearch/swav), [DINO](https://github.com/facebookresearch/dino), [StarGAN v2](https://github.com/clovaai/stargan-v2), [Swapping Autoencoder](https://github.com/taesungp/swapping-autoencoder-pytorch), [clean-fid](https://github.com/GaParmar/clean-fid), and [stylegan2-pytorch](https://github.com/rosinality/stylegan2-pytorch).
+
+
+## Licenses
+All material in this repository is made available under the [MIT License](LICENSE).
+
+The custom CUDA kernels ([fused_bias_act_kernel.cu](model/networks/stylegan2_op/fused_bias_act_kernel.cu) and [upfirdn2d_kernel.cu](model/networks/stylegan2_op/upfirdn2d_kernel.cu)) are under the [Nvidia Source Code License](https://nvlabs.github.io/stylegan2/license.html), and are for non-commercial use only.

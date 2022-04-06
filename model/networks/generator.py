@@ -19,7 +19,7 @@ class Generator(nn.Module):
         f_depth,
         content_resolution,
         architecture="skip",
-        mod_type="stargan",
+        mod_type="adain",
         channel_multiplier=1.0,
         channel_max=512,
     ):
