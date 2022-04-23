@@ -12,7 +12,7 @@ import mylib.misc as misc
 from mylib.torch_utils import unnormalize, update_average, warmup_learning_rate
 from .criterion import (ReconstructionLoss, SwappedPredictionLoss,
                         compute_grad_gp, get_adversarial_loss, mse_loss)
-from .networks import Generator, MultiPrototypes, StyleDiscriminator
+from .networks import Generator, Prototypes, StyleDiscriminator
 
 
 class StyleAwareDiscriminator(mylib.BaseModel):
@@ -25,7 +25,8 @@ class StyleAwareDiscriminator(mylib.BaseModel):
         )
         parser.add_argument("--latent-dim", type=int, default=256)
         parser.add_argument("--style-dim", type=int, default=512)
-        parser.add_argument("--nb-proto", type=int, default=[32], nargs="+")
+        # parser.add_argument("--nb-proto", type=int, default=[32], nargs="+")
+        parser.add_argument("--nb-proto", type=int, default=[4], nargs="+")
         parser.add_argument("--f-depth", type=int, default=2)
         parser.add_argument("--g-ch-mul", type=float, default=1.0)
         parser.add_argument("--d-ch-mul", type=float, default=1.0)
@@ -46,6 +47,7 @@ class StyleAwareDiscriminator(mylib.BaseModel):
         # Criterion parameters.
         parser.add_argument("--temperature", type=float, default=0.1)
         parser.add_argument("--lambda-swap", type=float, default=1.0)
+        parser.add_argument("--lambda-style", type=float, default=1.0)
         parser.add_argument("--lambda-r1", type=float, default=1.0)
         parser.add_argument("--lambda-rec", type=float, default=1.0)
         parser.add_argument("--lambda-sty", type=float, default=1.0)
@@ -82,17 +84,17 @@ class StyleAwareDiscriminator(mylib.BaseModel):
             channel_multiplier=opt.d_ch_mul,
         )
 
-        queue_sizes = []
-        for n_proto in opt.nb_proto:
-            queue_size = 0
-            if n_proto > opt.batch_size:
-                queue_size = (n_proto // opt.batch_size) * opt.batch_size
-            queue_sizes.append(queue_size)
-        self.prototypes = MultiPrototypes(
+        # queue_sizes = []
+        # for n_proto in opt.nb_proto:
+        #     queue_size = 0
+        #     if n_proto > opt.batch_size:
+        #         queue_size = (n_proto // opt.batch_size) * opt.batch_size
+        #     queue_sizes.append(queue_size)
+        self.prototypes = Prototypes(
             in_features=opt.latent_dim,
-            num_prototypes=opt.nb_proto,
-            num_queue=2,
-            queue_sizes=queue_sizes,
+            num_prototype=opt.nb_proto[0],
+            # num_queue=2,
+            # queue_sizes=0,
         )
 
         # Non-trainable networks.
@@ -146,19 +148,20 @@ class StyleAwareDiscriminator(mylib.BaseModel):
         x = self.G(cnt, sty, command="decode", heatmap=heatmap)
         return (x, cnt, sty) if return_codes else x
 
-    def set_input(self, step, xs):
+    def set_input(self, step, xs, cs):
         self.step = step
         self.x_real, self.x_aug = xs
         self.batch_size = self.x_real.size(0)
         self.x_ref = self.x_real[torch.randperm(self.batch_size)]
+        self.cs = cs
         if hasattr(self, "fan"):
             self.hm = self.fan.get_heatmap(self.x_real)
         else:
             self.hm = None
 
         # Cancel gradients of last layer during first epoch.
-        self.freeze_prototypes = step < 500
-        self.use_queue = step >= self.opt.use_queue_after
+        self.freeze_prototypes = True  # always freeze them
+        self.use_queue = False  # step >= self.opt.use_queue_after
         self.do_lazy_r1 = self.opt.lambda_r1 > 0.0 \
             and step % self.opt.lazy_r1_freq == 0
         self.do_content_preserving = self.opt.cnt_preserv_freq > 0 \
@@ -186,7 +189,7 @@ class StyleAwareDiscriminator(mylib.BaseModel):
 
     def _update_discriminator(self, x_fake):
         self.D.requires_grad_(True)
-        self.prototypes.requires_grad_(True)
+        # self.prototypes.requires_grad_(True)
 
         sty_org, logit_r = self.D(self.x_real)
         sty_aug = self.D(self.x_aug, command="encode")
@@ -198,21 +201,27 @@ class StyleAwareDiscriminator(mylib.BaseModel):
 
         # Compute the swapped prediction loss.
         styles = sty_org, sty_aug
-        queue_ids = (0, 1) if self.use_queue else (None, None)
-        multi_scores = self.prototypes(styles, queue_ids)
-        loss_swap = 0.0
-        for scores in multi_scores:
-            loss_swap += self.swapped_prediction(scores, [0,1], [1,0], self.batch_size)
-        loss_swap /= len(scores)
-        self.loss["Loss/swap"] = loss_swap.detach()
+
+        # queue_ids = (0, 1) if self.use_queue else (None, None)
+        # multi_scores = self.prototypes(styles, queue_ids)
+        # multi_scores = self.prototypes(styles)
+        # loss_swap = 0.0
+        # for scores in multi_scores:
+        #     loss_swap += self.swapped_prediction(scores, [0,1], [1,0], self.batch_size)
+        # loss_swap /= len(scores)
+        # self.loss["Loss/swap"] = loss_swap.detach()
+        prototype_target = self.prototypes.weight.data[self.cs]
+        loss_style_match = F.mse_loss(sty_org, prototype_target) + F.mse_loss(sty_aug, prototype_target)
+        self.loss["Loss/style-match"] = loss_style_match
 
         # Update the discriminator and style encoder parameters.
-        (loss_adv + self.opt.lambda_swap * loss_swap).backward()
+        # (loss_adv + self.opt.lambda_swap * loss_swap).backward()
+        (loss_adv + self.opt.lambda_style * loss_style_match).backward()
         if self.freeze_prototypes:
             self.prototypes.zero_grad(set_to_none=True)
         self.optimizers["D"].step()
         self.optimizers["D"].zero_grad(set_to_none=True)
-        self.prototypes(command="normalize")
+        # self.prototypes(command="normalize")
 
         # Compute the R1 gradient penalty.
         if self.do_lazy_r1:
@@ -231,7 +240,7 @@ class StyleAwareDiscriminator(mylib.BaseModel):
 
     def _update_generator(self, x_fake, cnt_real, sty_org, sty_ref):
         self.D.requires_grad_(False)
-        self.prototypes.requires_grad_(False)
+        # self.prototypes.requires_grad_(False)
 
         # Compute the reconstruction loss.
         x_rec = self.G(cnt_real, sty_org, command="decode", heatmap=self.hm)
@@ -311,21 +320,18 @@ class StyleAwareDiscriminator(mylib.BaseModel):
         self.generate_grid(self.debug, self.debug, fname)
 
         # Prototype-guided synthesis.
-        filename = os.path.join(snapshot_dir, "proto{}_{:03d}to{:03d}.png")
-        for i, n_proto in enumerate(opt.nb_proto):
-            for j in range(math.ceil(n_proto/10)):
-                begin = j * 10
-                end = min(n_proto, (j+1)*10)
-                fname = filename.format(i, begin, end-1)
-                prototypes = self.prototypes_ema[i].weight[begin:end]
-                self.generate_grid(self.debug, prototypes, fname)
+        filename = os.path.join(snapshot_dir, "proto{}.png")
+        n_proto = opt.nb_proto[0]
+        for i in range(n_proto):
+            fname = filename.format(i)
+            prototypes = self.prototypes_ema.weight[i:i+1]
+            self.generate_grid(self.debug, prototypes, fname)
 
         # Prototype interpolation.
-        for i, pairs in enumerate(self.lerp_pairs):
-            for j, pair in enumerate(pairs):
-                fname = os.path.join(snapshot_dir, f"lerp{i}_{j}.png")
-                style_codes = self.prototypes_ema.interpolate(pair, id=i)
-                self.generate_grid(self.debug, style_codes, fname)
+        for i, pair in enumerate(self.lerp_pairs):
+            fname = os.path.join(snapshot_dir, f"lerp{pair[0]}_{pair[1]}.png")
+            style_codes = self.prototypes_ema.interpolate(pair)
+            self.generate_grid(self.debug, style_codes, fname)
 
         # Spatial-style mixing.
         grid = [
@@ -396,13 +402,11 @@ class StyleAwareDiscriminator(mylib.BaseModel):
         indices = random.sample([i for i in range(len(dataset))], k=4)
         debug = []
         for i in indices:
-            x = dataset[i]
+            x = dataset[i][0]
             debug.append(x)
         self.debug = torch.stack(debug).to(self.device)
         self.lerp_pairs = []
         for n_proto in opt.nb_proto:
-            pairs = []
-            for _ in range(2):
+            for _ in range(4):
                 pair = random.sample([i for i in range(n_proto)], k=2)
-                pairs.append(pair)
-            self.lerp_pairs.append(pairs)
+                self.lerp_pairs.append(pair)
